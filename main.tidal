@@ -1,0 +1,22 @@
+setcps $ 120 / 60 /4
+
+
+d1 $ drums "bd*4" # m 2
+
+d2 $ (n "1*16") # m 1 # gain rand # legato 0.1
+
+d2 $ (drums "[bd:2*4, [~ sn]*2]") # m 2 # gain 1.2
+
+d1 $ stack [ ghost $ drums "~ sn", drums "bd*2 [~ bd]" ] # m 2 # gain 1.1
+
+d1 $ stack [ ghost $ drums "bd*2 [~ bd]" ] # m 2 # gain 1.1
+
+d3 $ ghost (drums "hh*8") # m 2 # amp 0.7
+
+d4 $ slow 2 (note "-27!16 -30!8 -34!8") # m 1 # amp 0.3
+
+d5 $ "1*16" # ccv (range 30 40 (slow 4 sine)) # knob 1
+
+d3 $ silence
+
+hush
