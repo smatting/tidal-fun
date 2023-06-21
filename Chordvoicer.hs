@@ -1,9 +1,10 @@
-module Chordvoicer (vchord, pnote, gscale, parse) where
+module Chordvoicer  where
 
 import Control.Applicative ((<|>), many)
 import Data.Functor (($>), void)
-import Data.List (takeWhile, findIndex, drop, break)
-import Data.Maybe (listToMaybe, catMaybes)
+import Data.List (takeWhile, findIndex, drop, break, elem)
+import Data.Maybe (listToMaybe, catMaybes, fromJust)
+import Debug.Trace (traceM)
 import Data.String
 import Sound.Tidal.Core
 import Sound.Tidal.ParseBP as Tidal (parseNote)
@@ -11,9 +12,9 @@ import Sound.Tidal.Pattern (Pattern)
 import Sound.Tidal.Scales (scaleTable)
 import Sound.Tidal.Show
 import Sound.Tidal.Simple
-import Text.ParserCombinators.ReadP (ReadP, look, char, string, sepBy, sepBy1, readS_to_P, eof)
-import Text.ParserCombinators.ReadPrec hiding (look)
-import Text.Read hiding (look)
+import Text.ParserCombinators.ReadP (ReadP, look, char, string, sepBy, sepBy1, readS_to_P, eof, manyTill, get)
+import Text.ParserCombinators.ReadPrec hiding (look, get)
+import Text.Read hiding (look, get)
 import qualified Sound.Tidal.Pattern as Tidal
 import qualified Text.Parsec as Parsec
 
@@ -110,8 +111,7 @@ voice rootNote vnotes n =
                    )
             (n, noteAdd rootNote (-1) n (delta rootNote), [])
             vnhi
-  in (reverse notesLo) <> (reverse notesHi)
-
+  in reverse notesLo <> reverse notesHi
 
 
 parsePositive :: ReadP Int
@@ -164,9 +164,28 @@ parseChord = do
 
 -- Notation:
 -- c5:ionian
--- parseScale :: ReadP (Tidal.Note, [Tidal.Note])
--- parseScale = do
---   pure ()
+-- ionian
+parseScale :: ReadP (Maybe Tidal.Note, [Tidal.Note])
+parseScale = do
+  ahead <- look
+  note <- if ':' `elem` ahead
+    then do
+        unparsedNote <- manyTill get (char ':')
+        Just <$> readJust ("Could not parse Tidal note from: " <> unparsedNote) (pnote unparsedNote)
+    else
+        pure Nothing
+  unparsedScaleName <- look
+  notes <- readJust "" (lookup unparsedScaleName scaleTable)
+  pure (note, notes)
+  where
+
+    readJust :: String -> Maybe a -> ReadP a
+    readJust msg Nothing = fail msg
+    readJust _msg (Just x) = pure x
+
+
+pnote :: String -> Maybe Tidal.Note
+pnote s = either (const Nothing) Just  $ Parsec.runParser Tidal.parseNote 0 "" s
 
 --
 -- splitString ':' "hi:world"
@@ -183,53 +202,12 @@ splitString sep s =
   in (a, dropWhile (== sep) b)
 
 
-checkTidalToken :: String -> Maybe String
-checkTidalToken input =
-  let pat = fromString input :: Pattern String
-      s = head (lines (show pat))
-      o = init $ drop 1 $ snd $ splitString '|' s
-  in if input == o then Nothing else Just o
-
-testIsTidalToken :: String -> IO ()
-testIsTidalToken input =
-  case checkTidalToken input of
-    Nothing -> pure ()
-    Just s -> let msg = "\"" <> input <> "\"" <> "is not a token. Parsed: " <> s
-              in assertBool msg False
-
-assertBool :: String -> Bool -> IO ()
-assertBool msg True = pure ()
-assertBool msg False = error $ "Assertion failure: " <> msg
-
-tests :: IO ()
-tests = do
-  testIsTidalToken "1"
-  testIsTidalToken "1s"
-  testIsTidalToken "1f"
-  testIsTidalToken "1.2"
-  testIsTidalToken "1.-1"
-  testIsTidalToken "1s.-1"
-  testIsTidalToken "1:1-3-5"
-  testIsTidalToken "1:1s-3-5"
-  testIsTidalToken "1.2:1s-3-5"
-  testIsTidalToken "1s.2:1s-3-5"
-  testIsTidalToken "1s.2:1s-.-5"
-  testIsTidalToken "1.1-.-5"
-  testIsTidalToken "1.1-_-5"
-
-
 runParser :: ReadP a -> String -> Maybe a
 runParser parser str = fst <$> listToMaybe (readPrec_to_S (readP_to_Prec (const parser)) 1 str)
 
+
 parse :: String -> Maybe (Note, [VoiceNote])
 parse = runParser parseChord
-
-pnote :: String -> Maybe Tidal.Note
-pnote s = either (const Nothing) Just  $ Parsec.runParser Tidal.parseNote 0 "" s
-
-readJust :: String -> Maybe a -> ReadP a
-readJust msg Nothing = fail msg
-readJust _msg (Just x) = pure x
 
 gscale :: String -> Maybe [Int]
 gscale s = maybe Nothing (Just . map round) (lookup s scaleTable)
@@ -253,3 +231,50 @@ vchord scaleP voicesP = Tidal.uncollect $ do
      Just (rootNote, vs) ->
        let notes = voice rootNote vs n
        in pure $ catMaybes (map (applyScale n scale) notes)
+
+-- Tests
+
+checkTidalToken :: String -> Maybe String
+checkTidalToken input =
+  let pat = fromString input :: Pattern String
+      s = head (lines (show pat))
+      o = init $ drop 1 $ snd $ splitString '|' s
+  in if input == o then Nothing else Just o
+
+testIsTidalToken :: String -> IO ()
+testIsTidalToken input =
+  case checkTidalToken input of
+    Nothing -> pure ()
+    Just s -> let msg = "\"" <> input <> "\"" <> "is not a token. Parsed: " <> s
+              in assertBool msg False
+
+assertBool :: String -> Bool -> IO ()
+assertBool msg True = pure ()
+assertBool msg False = error $ "\nAssertion failure:\n" <> msg
+
+testParse :: (Eq a, Show a) => ReadP a -> String -> a -> IO ()
+testParse parser input expected =
+  case runParser parser input of
+    Nothing -> assertBool ("Failed to parse: " <> input) False
+    Just x -> let msg = ("Failed to parse correctly: " <> input <> "\nExpected: " <> show expected <> "\nBut got : " <> show x <> "\n")
+              in assertBool msg (x == expected)
+
+
+tests :: IO ()
+tests = do
+  testIsTidalToken "1"
+  testIsTidalToken "1s"
+  testIsTidalToken "1f"
+  testIsTidalToken "1.2"
+  testIsTidalToken "1.-1"
+  testIsTidalToken "1s.-1"
+  testIsTidalToken "1:1-3-5"
+  testIsTidalToken "1:1s-3-5"
+  testIsTidalToken "1.2:1s-3-5"
+  testIsTidalToken "1s.2:1s-3-5"
+  testIsTidalToken "1s.2:1s-.-5"
+  testIsTidalToken "1.1-.-5"
+  testIsTidalToken "1.1-_-5"
+  testParse parseChord "1:1-3-5" (Note 1 0 0, [VoiceNote 1 0, VoiceNote 3 0,  VoiceNote 5 0])
+  testParse parseScale "c4:ionian" (Just (fromJust (pnote "c4") :: Tidal.Note),  [0, 2, 4, 5, 7, 9, 11] :: [Tidal.Note])
+  testParse parseScale "ionian" (Nothing,  [0, 2, 4, 5, 7, 9, 11] :: [Tidal.Note])
