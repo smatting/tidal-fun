@@ -95,8 +95,9 @@ voice rootNote vnotes n =
                      if isJump v
                        then (i, noteAdd n nt (-n) (vdelta v + delta rootNote), nl)
                      else
-                       let k = solveAddNeg i (vidx v) n
+                       let
                            i' = vidx v
+                           k = solveAddNeg n i i'
                            nt' = noteAdd n nt k (vdelta v + delta rootNote)
                        in (i', nt', nt':nl)
                    )
@@ -111,8 +112,8 @@ voice rootNote vnotes n =
                      if isJump v
                        then (i, noteAdd n nt n (vdelta v + delta rootNote), nl)
                      else
-                       let k = solveAddPos n i (vidx v)
-                           i' = vidx v
+                       let i' = vidx v
+                           k = solveAddPos n i i'
                            nt' = noteAdd n nt k (vdelta v + delta rootNote)
                        in (i', nt', nt':nl)
                    )
@@ -315,3 +316,10 @@ tests = do
         (Note 1 1 0)
         [VoiceNote 1 (-1), VoiceNote 3 1, VoiceNote 5 0]
         [Note 1 0 0, Note 3 2 0, Note 5 1 0]
+
+
+  testChordVoicer
+         7
+        (Note 1 0 0)
+        [VoiceNote 5 0, dot, VoiceNote 1 0, VoiceNote 3 0]
+        [Note 5 0 (-1), Note 1 0 0, Note 3 0 0]
