@@ -119,7 +119,7 @@ voice rootNote vnotes n =
                    )
             (n, noteAdd n rootNote (-1) (delta rootNote), [])
             vnhi
-  in reverse notesLo <> reverse notesHi
+  in notesLo <> reverse notesHi
 
 ---
 --- Parsers
@@ -317,9 +317,20 @@ tests = do
         [VoiceNote 1 (-1), VoiceNote 3 1, VoiceNote 5 0]
         [Note 1 0 0, Note 3 2 0, Note 5 1 0]
 
-
   testChordVoicer
          7
         (Note 1 0 0)
         [VoiceNote 5 0, dot, VoiceNote 1 0, VoiceNote 3 0]
         [Note 5 0 (-1), Note 1 0 0, Note 3 0 0]
+
+  testChordVoicer
+         7
+        (Note 1 0 0)
+        [VoiceNote 7 0, VoiceNote 5 0, dot, VoiceNote 1 0, VoiceNote 3 0]
+        [Note 7 0 (-2), Note 5 0 (-1), Note 1 0 0, Note 3 0 0]
+
+  testChordVoicer
+         7
+        (Note 5 0 0)
+        [VoiceNote 1 0, VoiceNote 3 0, VoiceNote 5 0]
+        [Note 5 0 0, Note 7 0 0, Note 2 0 1]
