@@ -1,18 +1,21 @@
 module Chordvoicer (vchord, pnote, gscale, parse) where
 
-import Data.List (takeWhile, findIndex, drop)
-import Text.ParserCombinators.ReadPrec hiding (look)
-import Text.ParserCombinators.ReadP (ReadP, look, char, string, sepBy, sepBy1, readS_to_P, eof)
-import Text.Read hiding (look)
 import Control.Applicative ((<|>), many)
-import Data.Maybe (catMaybes)
 import Data.Functor (($>), void)
-import Data.Maybe (listToMaybe)
-import Sound.Tidal.ParseBP (parseNote)
-import qualified Text.Parsec as Parsec
-import Sound.Tidal.Scales (scaleTable)
-import qualified Sound.Tidal.Pattern as Tidal
+import Data.List (takeWhile, findIndex, drop, break)
+import Data.Maybe (listToMaybe, catMaybes)
+import Data.String
+import Sound.Tidal.Core
+import Sound.Tidal.ParseBP as Tidal (parseNote)
 import Sound.Tidal.Pattern (Pattern)
+import Sound.Tidal.Scales (scaleTable)
+import Sound.Tidal.Show
+import Sound.Tidal.Simple
+import Text.ParserCombinators.ReadP (ReadP, look, char, string, sepBy, sepBy1, readS_to_P, eof)
+import Text.ParserCombinators.ReadPrec hiding (look)
+import Text.Read hiding (look)
+import qualified Sound.Tidal.Pattern as Tidal
+import qualified Text.Parsec as Parsec
 
 -- A note within an implied scale idx=1 first note of the scale, idx=2 second note
 -- deltas are semitones to go off-scale
@@ -109,14 +112,6 @@ voice rootNote vnotes n =
             vnhi
   in (reverse notesLo) <> (reverse notesHi)
 
---
--- Notation:
--- 1:1-3-5
--- 1:5-.-1-3-5 # with dot .
--- 1:1-_-3-5   # octave jump _
--- 1s:1-3-5    # s is sharp => C#-maj.
--- 1b:1-3-5    # b/f is flat => Cb-maj.
--- 1:1-3b-5    # f is flat => C-min.
 
 
 parsePositive :: ReadP Int
@@ -152,6 +147,13 @@ parseToken :: ReadP VoiceNote
 parseToken =
   parseVoiceNote <|> string "." $> dot <|> string "_" $> jump
 
+-- Notation:
+-- 1:1-3-5
+-- 1:5-.-1-3-5 # with dot .
+-- 1:1-_-3-5   # octave jump _
+-- 1s:1-3-5    # s is sharp => C#-maj.
+-- 1b:1-3-5    # b/f is flat => Cb-maj.
+-- 1:1-3b-5    # f is flat => C-min.
 parseChord :: ReadP (Note, [VoiceNote])
 parseChord = do
   rootv <- parseRootNote
@@ -160,14 +162,74 @@ parseChord = do
   void eof
   pure (rootv, vnotes)
 
+-- Notation:
+-- c5:ionian
+-- parseScale :: ReadP (Tidal.Note, [Tidal.Note])
+-- parseScale = do
+--   pure ()
+
+--
+-- splitString ':' "hi:world"
+-- ("hi","world")
+--
+-- splitString ':' "hiworld"
+-- ("hiworld","")
+--
+-- splitString ':' "hi:wor:ld"
+-- ("hi","wor:ld")
+splitString :: Char -> String -> (String, String)
+splitString sep s =
+  let (a, b) = break (== sep) s
+  in (a, dropWhile (== sep) b)
+
+
+checkTidalToken :: String -> Maybe String
+checkTidalToken input =
+  let pat = fromString input :: Pattern String
+      s = head (lines (show pat))
+      o = init $ drop 1 $ snd $ splitString '|' s
+  in if input == o then Nothing else Just o
+
+testIsTidalToken :: String -> IO ()
+testIsTidalToken input =
+  case checkTidalToken input of
+    Nothing -> pure ()
+    Just s -> let msg = "\"" <> input <> "\"" <> "is not a token. Parsed: " <> s
+              in assertBool msg False
+
+assertBool :: String -> Bool -> IO ()
+assertBool msg True = pure ()
+assertBool msg False = error $ "Assertion failure: " <> msg
+
+tests :: IO ()
+tests = do
+  testIsTidalToken "1"
+  testIsTidalToken "1s"
+  testIsTidalToken "1f"
+  testIsTidalToken "1.2"
+  testIsTidalToken "1.-1"
+  testIsTidalToken "1s.-1"
+  testIsTidalToken "1:1-3-5"
+  testIsTidalToken "1:1s-3-5"
+  testIsTidalToken "1.2:1s-3-5"
+  testIsTidalToken "1s.2:1s-3-5"
+  testIsTidalToken "1s.2:1s-.-5"
+  testIsTidalToken "1.1-.-5"
+  testIsTidalToken "1.1-_-5"
+
+
 runParser :: ReadP a -> String -> Maybe a
 runParser parser str = fst <$> listToMaybe (readPrec_to_S (readP_to_Prec (const parser)) 1 str)
 
 parse :: String -> Maybe (Note, [VoiceNote])
 parse = runParser parseChord
 
-pnote :: String -> Maybe Int
-pnote s = either (const Nothing) Just  $ Parsec.runParser parseNote 0 "" s
+pnote :: String -> Maybe Tidal.Note
+pnote s = either (const Nothing) Just  $ Parsec.runParser Tidal.parseNote 0 "" s
+
+readJust :: String -> Maybe a -> ReadP a
+readJust msg Nothing = fail msg
+readJust _msg (Just x) = pure x
 
 gscale :: String -> Maybe [Int]
 gscale s = maybe Nothing (Just . map round) (lookup s scaleTable)
