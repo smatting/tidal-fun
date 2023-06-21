@@ -334,3 +334,9 @@ tests = do
         (Note 5 0 0)
         [VoiceNote 1 0, VoiceNote 3 0, VoiceNote 5 0]
         [Note 5 0 0, Note 7 0 0, Note 2 0 1]
+
+  testChordVoicer
+         7
+        (Note 1 0 0)
+        [VoiceNote 1 0, jump, VoiceNote 3 0]
+        [Note 1 0 0, Note 3 0 1]
