@@ -13,9 +13,9 @@ import Sound.Tidal.Pattern (Pattern)
 import Sound.Tidal.Scales (scaleTable)
 import Sound.Tidal.Show
 import Sound.Tidal.Simple
-import Text.ParserCombinators.ReadP (ReadP, look, char, string, sepBy, sepBy1, readS_to_P, eof, manyTill, get)
-import Text.ParserCombinators.ReadPrec hiding (look, get)
-import Text.Read hiding (look, get)
+import Text.ParserCombinators.ReadP (ReadP, look, char, string, sepBy, sepBy1, readS_to_P, eof, manyTill, get, choice)
+import Text.ParserCombinators.ReadPrec (readPrec_to_P, readPrec_to_S, readP_to_Prec)
+import Text.Read (readPrec)
 import qualified Sound.Tidal.Pattern as Tidal
 import qualified Text.Parsec as Parsec
 
@@ -39,6 +39,13 @@ data VoiceNote = VoiceNote {
 }
   deriving (Show, Eq)
 
+-- idx is 0-based! So 0 is the first note of the scale
+data AbsVoice = AbsVoice {
+  absVidx :: Int,
+  absVdelta :: Int
+}
+  deriving (Show, Eq)
+
 dot = VoiceNote 0 0
 
 isDot :: VoiceNote -> Bool
@@ -49,10 +56,16 @@ jump = VoiceNote 0 1
 isJump :: VoiceNote -> Bool
 isJump v = v == jump
 
+data Voicing
+  = Stacked Note [VoiceNote]
+  | Absolute AbsVoice
+  deriving (Eq, Show)
+
 -- i = 1..n
 -- k int
 add :: Int -> Int -> Int -> Int
 add i k n =
+  -- same as (ii `mod` n) + 1
   ((i - 1 + k) `mod` n) + 1
 
 -- Smallest k > 0
@@ -77,6 +90,32 @@ noteAdd n (Note i _ o) k d =
          | otherwise = 0
   in Note (add i k n) d (o + dj)
 
+-- n = 3
+-- k = (-3)
+-- i = 1
+-- dj `shouldBe` -1
+-- ii = new index, but 0-based
+-- ii = -3
+--
+-- ii =  3, dj = 1
+-- ii =  2, dj = 0
+-- ii =  1, dj = 0
+-- ii =  0, dj = 0
+-- ii = -1, dj = -1, (-ii-1) = 0
+-- ii = -2, dj = -1, (-ii-1) = 1
+-- ii = -3, dj = -1, (-ii-1) = 2
+-- ii = -4, dj = -2
+
+--
+
+noteAddAbs :: Int -> Note -> Int -> Int -> Note
+noteAddAbs n (Note i _ o) k d =
+  let ii = i - 1 + k
+      dj | ii < 0    = -(((-ii-1) `div` n) + 1)
+         | ii >= n   = (ii `div` n)
+         | otherwise = 0
+  in Note (add i k n) d (o + dj)
+
 splitlohi :: [VoiceNote] -> ([VoiceNote], [VoiceNote])
 splitlohi vnotes =
   case findIndex isDot vnotes of
@@ -84,8 +123,8 @@ splitlohi vnotes =
     Just i ->
       (take i vnotes, drop (i + 1) vnotes)
 
-voice :: Note -> [VoiceNote] -> Int -> [Note]
-voice rootNote vnotes n =
+voice :: Int -> Note -> [VoiceNote] -> [Note]
+voice n rootNote vnotes =
   let (vnlo, vnhi) = splitlohi vnotes
       (_, _, notesLo) =
             foldl' (\(i, nt, nl) v ->
@@ -121,6 +160,9 @@ voice rootNote vnotes n =
             vnhi
   in notesLo <> reverse notesHi
 
+voiceAbsolute :: Int -> AbsVoice -> Note
+voiceAbsolute n v = noteAddAbs n (Note 1 0 0) (absVidx v) (absVdelta v)
+
 ---
 --- Parsers
 ---
@@ -154,6 +196,13 @@ parseRootNote = do
     _ -> pure 0
   pure $ Note n sf o
 
+parseAbsVoice :: ReadP AbsVoice
+parseAbsVoice = do
+  idx :: Int <- parseInt
+  sf <- sum <$> many ((char 's' $> 1) <|> (char 'f' $> (-1)))
+  void eof
+  pure $ AbsVoice idx sf
+
 parseToken :: ReadP VoiceNote
 parseToken =
   parseVoiceNote <|> string "." $> dot <|> string "_" $> jump
@@ -165,6 +214,8 @@ parseToken =
 -- 1s:1-3-5    # s is sharp => C#-maj.
 -- 1b:1-3-5    # b/f is flat => Cb-maj.
 -- 1:1-3b-5    # f is flat => C-min.
+-- 1:9-5-7     # is the same as 1:2-5-7 (if n==7)
+-- 3 (wihout ":") is the same as 1:3
 parseChord :: ReadP (Note, [VoiceNote])
 parseChord = do
   rootv <- parseRootNote
@@ -172,6 +223,13 @@ parseChord = do
   vnotes <- sepBy parseVoiceNote (eof <|> void (string "-"))
   void eof
   pure (rootv, vnotes)
+
+parseVoicing :: ReadP Voicing
+parseVoicing =
+  choice [
+    uncurry Stacked <$> parseChord,
+    Absolute <$> parseAbsVoice
+  ]
 
 -- Notation:
 -- c5:ionian
@@ -216,9 +274,6 @@ runParser :: ReadP a -> String -> Maybe a
 runParser parser str = fst <$> listToMaybe (readPrec_to_S (readP_to_Prec (const parser)) 1 str)
 
 
-parse :: String -> Maybe (Note, [VoiceNote])
-parse = runParser parseChord
-
 ---
 --- chordvoicer tidal integration
 ---
@@ -240,18 +295,23 @@ applyScale n scale (Note idx d o) =
       Just $ Tidal.Note $ Tidal.unNote (scale !! i) + fromIntegral d + fromIntegral o * 12
     else Nothing
 
-inscale :: Pattern [Tidal.Note] -> Pattern String -> Pattern [Tidal.Note]
-inscale scaleP voicesP = do
-  -- traceM ("inscale: ")
-  mvoices <- parse <$> voicesP
+inscale :: Pattern String -> Pattern String -> Pattern Tidal.Note
+inscale scaleP = inscale' (mkscale scaleP)
+
+inscale' :: Pattern [Tidal.Note] -> Pattern String -> Pattern Tidal.Note
+inscale' scaleP voicesP = Tidal.uncollect $ do
   scale <- scaleP
-  -- traceM ("inscale: scale: " <> show scale)
+  mvoicing <- runParser parseVoicing <$> voicesP
   let n = length scale
-  case mvoices of
-    Nothing -> pure []
-    Just (rootNote, vs) ->
-      let notes = voice rootNote vs n
-      in pure $ mapMaybe (applyScale n scale) notes
+  if n == 0
+    then pure []
+    else
+      let notes =
+           case mvoicing of
+             Nothing -> []
+             Just (Stacked rootNote vs) -> voice n rootNote vs
+             Just (Absolute v) -> [ voiceAbsolute n v ]
+       in pure $ mapMaybe (applyScale n scale) notes
 
 -- Tests
 
@@ -282,9 +342,16 @@ testParse parser input expected =
 
 testChordVoicer :: Int -> Note -> [VoiceNote] ->  [Note] -> IO ()
 testChordVoicer n baseNote vs expected = do
-  let actual = voice baseNote vs n
+  let actual = voice n baseNote vs
       msg = "Expected: " <> show expected <> "\nBug got : " <> show actual <> "\n"
   assertBool msg (expected == actual)
+
+testAbsoluteVoice :: Int -> AbsVoice -> Note -> IO ()
+testAbsoluteVoice n v expected =
+  let actual = voiceAbsolute n v
+  in if actual == expected
+        then pure ()
+        else assertBool ("Expected: " <> show expected <> "\nBug got : " <> show actual <> "\n") False
 
 tests :: IO ()
 tests = do
@@ -301,7 +368,18 @@ tests = do
   testIsTidalToken "1s.2:1s-.-5"
   testIsTidalToken "1.1-.-5"
   testIsTidalToken "1.1-_-5"
+
   testParse parseChord "1:1-3-5" (Note 1 0 0, [VoiceNote 1 0, VoiceNote 3 0,  VoiceNote 5 0])
+  testParse parseChord "2:1-3-5" (Note 2 0 0, [VoiceNote 1 0, VoiceNote 3 0,  VoiceNote 5 0])
+  testParse parseChord "2s:1-3-5" (Note 2 1 0, [VoiceNote 1 0, VoiceNote 3 0,  VoiceNote 5 0])
+  testParse parseChord "2f:1-3-5" (Note 2 (-1) 0, [VoiceNote 1 0, VoiceNote 3 0,  VoiceNote 5 0])
+  testParse parseChord "2.-1:1-3-5" (Note 2 0 (-1), [VoiceNote 1 0, VoiceNote 3 0,  VoiceNote 5 0])
+
+  testParse parseVoicing "3" (Absolute (AbsVoice 3 0))
+  testParse parseVoicing "0" (Absolute (AbsVoice 0 0))
+  testParse parseVoicing "0s" (Absolute (AbsVoice 0 1))
+  testParse parseVoicing "0f" (Absolute (AbsVoice 0 (-1)))
+
   testParse parseScale "c4:ionian" (Just (fromJust (pnote "c4") :: Tidal.Note),  [0, 2, 4, 5, 7, 9, 11] :: [Tidal.Note])
   testParse parseScale "ionian" (Nothing,  [0, 2, 4, 5, 7, 9, 11] :: [Tidal.Note])
 
@@ -340,3 +418,23 @@ tests = do
         (Note 1 0 0)
         [VoiceNote 1 0, jump, VoiceNote 3 0]
         [Note 1 0 0, Note 3 0 1]
+
+
+  testAbsoluteVoice 3 (AbsVoice (-6) 0) (Note 1 0 (-2))
+  testAbsoluteVoice 3 (AbsVoice (-5) 0) (Note 2 0 (-2))
+  testAbsoluteVoice 3 (AbsVoice (-4) 0) (Note 3 0 (-2))
+
+  testAbsoluteVoice 3 (AbsVoice (-3) 0) (Note 1 0 (-1))
+  testAbsoluteVoice 3 (AbsVoice (-2) 0) (Note 2 0 (-1))
+  testAbsoluteVoice 3 (AbsVoice (-1) 0) (Note 3 0 (-1))
+
+  testAbsoluteVoice 3 (AbsVoice 0 0) (Note 1 0 0)
+  testAbsoluteVoice 3 (AbsVoice 1 0) (Note 2 0 0)
+  testAbsoluteVoice 3 (AbsVoice 2 0) (Note 3 0 0)
+
+  testAbsoluteVoice 3 (AbsVoice 3 0) (Note 1 0 1)
+  testAbsoluteVoice 3 (AbsVoice 4 0) (Note 2 0 1)
+  testAbsoluteVoice 3 (AbsVoice 5 0) (Note 3 0 1)
+
+  testAbsoluteVoice 3 (AbsVoice 0 1) (Note 1 1 0)
+  testAbsoluteVoice 3 (AbsVoice 0 (-1)) (Note 1 (-1) 0)
