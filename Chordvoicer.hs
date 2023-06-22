@@ -207,15 +207,6 @@ parseToken :: ReadP VoiceNote
 parseToken =
   parseVoiceNote <|> string "." $> dot <|> string "_" $> jump
 
--- Notation:
--- 1:1-3-5
--- 1:5-.-1-3-5 # with dot .
--- 1:1-_-3-5   # octave jump _
--- 1s:1-3-5    # s is sharp => C#-maj.
--- 1b:1-3-5    # b/f is flat => Cb-maj.
--- 1:1-3b-5    # f is flat => C-min.
--- 1:9-5-7     # is the same as 1:2-5-7 (if n==7)
--- 3 (wihout ":") is the same as 1:3
 parseChord :: ReadP (Note, [VoiceNote])
 parseChord = do
   rootv <- parseRootNote
@@ -295,7 +286,45 @@ applyScale n scale (Note idx d o) =
       Just $ Tidal.Note $ Tidal.unNote (scale !! i) + fromIntegral d + fromIntegral o * 12
     else Nothing
 
-inscale :: Pattern String -> Pattern String -> Pattern Tidal.Note
+
+-- Notation for scales
+--
+-- ionian     # c5-ionian
+-- f:ionian   # 55-ionian
+-- see `scaleTable` for name of scales
+--
+-- Notation for voicings:
+--
+-- Chords (with interpretation in c:ionian scale):
+-- 1:1-3-5       # cmajor chord
+-- 1:5-.-1-3-5   # cmajor chord with a g added in the bass
+-- 1:1-5-.-1-3-5 # cmajor chord with a c and g added in the bass
+-- 5:1-3-5       # gmajor chord
+-- 1:1-_-3-5     # octave jumps. between c5 e6 g6
+-- 1s:1-3-5      # s is sharp => C#-maj.
+-- 1f:1-3-5      # b/f is flat => Cb-maj.
+-- 1:1-3f-5      # f is flat => C-min.
+-- 1:9-5-7       # is the same as 1:2-5-7
+--
+-- Absolute scale picks (good for arpeggios)
+-- As "scale" provide a chord here, e.g. 1:1-3-5 (c, e, g)
+-- (-3)          # e4
+-- (-2)          # e4
+-- (-1)          # g4
+-- 0             # c5
+-- 1             # e5
+-- 2             # g5
+-- 3             # c6
+-- 4             # e6
+-- 5             # g6
+-- 0s            # c#4
+-- 0f            # cb4
+inscale ::
+  -- | scale
+  Pattern String ->
+  -- | voicings
+  Pattern String ->
+  Pattern Tidal.Note
 inscale scaleP = inscale' (mkscale scaleP)
 
 inscale' :: Pattern [Tidal.Note] -> Pattern String -> Pattern Tidal.Note
